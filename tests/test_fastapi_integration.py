@@ -179,7 +179,7 @@ def test_frontend_error_endpoint_returns_ok_and_sends_json_document() -> None:
     assert payload["frontend"]["metadata"]["screen"] == "OrdersPage"
     assert payload["metadata"] == {"region": "eu"}
     assert call["caption"] == (
-        "<b>survade-frontend Frontend Incident</b>\n"
+        "<b>survade-frontend Incident</b>\n"
         "\n"
         "Environment: test\n"
         "URL: https://app.example.com/orders/1\n"

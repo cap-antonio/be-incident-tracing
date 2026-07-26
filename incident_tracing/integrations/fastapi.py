@@ -176,7 +176,7 @@ def _build_frontend_caption(payload: Mapping[str, Any]) -> str:
     url = escape(str(url))
     request_id = escape(str(payload.get("request_id", "unknown")))
     return (
-        f"<b>{service_name} Frontend Incident</b>\n"
+        f"<b>{service_name} </b>\n"
         "\n"
         f"Environment: {environment}\n"
         f"URL: {url}\n"
@@ -202,7 +202,7 @@ def _build_caption(payload: Mapping[str, Any]) -> str:
     exc_type = escape(str(exc_type))
     request_id = escape(str(payload.get("request_id", "unknown")))
     return (
-        f"<b>{service_name} Incident</b>\n"
+        f"<b>{service_name} </b>\n"
         "\n"
         f"Environment: {environment}\n"
         f"Endpoint: {method} {path}\n"
