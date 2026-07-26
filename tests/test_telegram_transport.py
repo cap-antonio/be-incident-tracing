@@ -29,6 +29,7 @@ async def test_telegram_transport_sends_payload_as_json_document() -> None:
     await transport.send_json_document(
         filename="incident-req-123.json",
         payload={"request_id": "req-123"},
+        caption="<b>SURVADE BE Incident</b>\n\nEndpoint: GET /boom",
     )
 
     assert len(requests) == 1
@@ -37,6 +38,11 @@ async def test_telegram_transport_sends_payload_as_json_document() -> None:
     body = request.content
     assert b'name="chat_id"' in body
     assert b"chat-id" in body
+    assert b'name="caption"' in body
+    assert b"SURVADE BE" in body
+    assert b"Endpoint: GET /boom" in body
+    assert b'name="parse_mode"' in body
+    assert b"HTML" in body
     assert b'name="document"; filename="incident-req-123.json"' in body
     assert json.dumps({"request_id": "req-123"}, indent=2).encode() in body
 

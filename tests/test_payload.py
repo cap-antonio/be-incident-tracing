@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from incident_tracing.payload import build_incident_payload
+from incident_tracing.payload import build_frontend_incident_payload, build_incident_payload
 from incident_tracing.sanitizer import MASK
 
 
@@ -57,3 +57,31 @@ def test_build_incident_payload_requires_utc_iso_timestamp() -> None:
         )
 
     assert "T" in payload["timestamp"]
+
+
+def test_build_frontend_incident_payload_sanitizes_report() -> None:
+    payload = build_frontend_incident_payload(
+        request_id="req-front",
+        service_name="survade-frontend",
+        environment="production",
+        report={
+            "message": "Cannot read properties of undefined",
+            "stack": "TypeError: Cannot read properties of undefined",
+            "url": "https://app.example.com/orders/1",
+            "metadata": {"access_token": "secret", "screen": "OrdersPage"},
+        },
+        client_host="127.0.0.1",
+        user_agent="Mozilla/5.0",
+        metadata={"deployment": "blue"},
+    )
+
+    assert payload["request_id"] == "req-front"
+    assert payload["source"] == "frontend"
+    assert payload["service_name"] == "survade-frontend"
+    assert payload["environment"] == "production"
+    assert payload["frontend"]["message"] == "Cannot read properties of undefined"
+    assert payload["frontend"]["metadata"]["access_token"] == MASK
+    assert payload["frontend"]["metadata"]["screen"] == "OrdersPage"
+    assert payload["client"]["host"] == "127.0.0.1"
+    assert payload["client"]["user_agent"] == "Mozilla/5.0"
+    assert payload["metadata"] == {"deployment": "blue"}
