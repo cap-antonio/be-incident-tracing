@@ -10,7 +10,7 @@ def test_build_incident_payload_includes_safe_error_context() -> None:
     except ValueError as exc:
         payload = build_incident_payload(
             request_id="req-123",
-            service_name="survade-backend",
+            service_name="orders-api",
             environment="production",
             method="POST",
             path="/api/items",
@@ -23,7 +23,7 @@ def test_build_incident_payload_includes_safe_error_context() -> None:
         )
 
     assert payload["request_id"] == "req-123"
-    assert payload["service_name"] == "survade-backend"
+    assert payload["service_name"] == "orders-api"
     assert payload["environment"] == "production"
     assert payload["http"]["method"] == "POST"
     assert payload["http"]["path"] == "/api/items"
@@ -62,7 +62,7 @@ def test_build_incident_payload_requires_utc_iso_timestamp() -> None:
 def test_build_frontend_incident_payload_sanitizes_report() -> None:
     payload = build_frontend_incident_payload(
         request_id="req-front",
-        service_name="survade-frontend",
+        service_name="orders-web",
         environment="production",
         report={
             "message": "Cannot read properties of undefined",
@@ -77,7 +77,7 @@ def test_build_frontend_incident_payload_sanitizes_report() -> None:
 
     assert payload["request_id"] == "req-front"
     assert payload["source"] == "frontend"
-    assert payload["service_name"] == "survade-frontend"
+    assert payload["service_name"] == "orders-web"
     assert payload["environment"] == "production"
     assert payload["frontend"]["message"] == "Cannot read properties of undefined"
     assert payload["frontend"]["metadata"]["access_token"] == MASK

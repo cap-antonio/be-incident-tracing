@@ -6,7 +6,7 @@ def test_sanitize_masks_sensitive_keys_case_insensitively() -> None:
         "Authorization": "Bearer secret",
         "password": "plain",
         "nested": {
-            "OpenAI_API_Key": "sk-live",
+            "OpenAI_API_Key": "fake-openai-key",
             "items": [{"refresh_token": "refresh"}, {"safe": "value"}],
         },
     }
@@ -22,6 +22,6 @@ def test_sanitize_masks_sensitive_keys_case_insensitively() -> None:
 
 
 def test_sanitize_keeps_non_sensitive_values() -> None:
-    payload = {"email": "admin@example.com", "count": 2, "enabled": True}
+    payload = {"label": "admin user", "count": 2, "enabled": True}
 
     assert sanitize(payload) == payload

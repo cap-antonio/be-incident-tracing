@@ -37,7 +37,7 @@ def test_exception_handler_returns_safe_response_for_unexpected_errors() -> None
     install_exception_handler(
         app,
         transport=transport,
-        service_name="survade-backend",
+        service_name="orders-api",
         environment="test",
     )
 
@@ -60,7 +60,7 @@ def test_exception_handler_sends_json_document_payload_to_transport() -> None:
     install_exception_handler(
         app,
         transport=transport,
-        service_name="SURVADE BACKEND",
+        service_name="ORDERS API",
         environment="test",
         metadata={"region": "eu"},
     )
@@ -89,7 +89,7 @@ def test_exception_handler_sends_json_document_payload_to_transport() -> None:
     assert payload["exception"]["type"] == "RuntimeError"
     assert payload["metadata"] == {"region": "eu"}
     assert call["caption"] == (
-        "<b>SURVADE BACKEND Incident</b>\n"
+        "<b>ORDERS API Incident</b>\n"
         "\n"
         "Environment: test\n"
         "Endpoint: POST /boom\n"
@@ -126,7 +126,7 @@ def test_exception_handler_does_not_override_http_exceptions() -> None:
     install_exception_handler(
         app,
         transport=transport,
-        service_name="survade-backend",
+        service_name="orders-api",
         environment="test",
     )
 
@@ -147,7 +147,7 @@ def test_frontend_error_endpoint_returns_ok_and_sends_json_document() -> None:
     install_frontend_error_endpoint(
         app,
         transport=transport,
-        service_name="survade-frontend",
+        service_name="orders-web",
         environment="test",
         metadata={"region": "eu"},
     )
@@ -179,7 +179,7 @@ def test_frontend_error_endpoint_returns_ok_and_sends_json_document() -> None:
     assert payload["frontend"]["metadata"]["screen"] == "OrdersPage"
     assert payload["metadata"] == {"region": "eu"}
     assert call["caption"] == (
-        "<b>survade-frontend Incident</b>\n"
+        "<b>orders-web Incident</b>\n"
         "\n"
         "Environment: test\n"
         "URL: https://app.example.com/orders/1\n"
@@ -194,7 +194,7 @@ def test_frontend_error_endpoint_requires_shared_token_when_configured() -> None
     install_frontend_error_endpoint(
         app,
         transport=transport,
-        service_name="survade-frontend",
+        service_name="orders-web",
         environment="test",
         shared_token="expected-token",
     )
@@ -220,7 +220,7 @@ def test_frontend_error_endpoint_rate_limits_same_error() -> None:
     install_frontend_error_endpoint(
         app,
         transport=transport,
-        service_name="survade-frontend",
+        service_name="orders-web",
         environment="test",
     )
     client = TestClient(app)
@@ -241,7 +241,7 @@ def test_frontend_error_endpoint_rejects_too_large_payload() -> None:
     install_frontend_error_endpoint(
         app,
         transport=transport,
-        service_name="survade-frontend",
+        service_name="orders-web",
         environment="test",
         max_payload_bytes=20,
     )
