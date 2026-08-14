@@ -148,6 +148,14 @@ X-Incident-Token: <frontend incident token>
 Use a token that is different from your Telegram bot token. The shared token is only a
 lightweight gate for this endpoint, so keep rate limiting and payload limits enabled.
 
+### Frontend Reporter Package
+
+There is a companion npm package for reporting frontend errors to this endpoint:
+
+```bash
+npm install @cap-antonio/frontend-incident-reporter
+```
+
 ### Browser Example
 
 ```ts
