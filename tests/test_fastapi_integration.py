@@ -188,6 +188,31 @@ def test_frontend_error_endpoint_returns_ok_and_sends_json_document() -> None:
     )
 
 
+def test_frontend_error_endpoint_is_in_openapi_schema() -> None:
+    app = FastAPI()
+    transport = MemoryTransport()
+    install_frontend_error_endpoint(
+        app,
+        transport=transport,
+        service_name="orders-web",
+        environment="test",
+        shared_token="expected-token",
+    )
+
+    schema = TestClient(app).get("/openapi.json").json()
+    operation = schema["paths"]["/incident-tracing/frontend-error"]["post"]
+
+    assert operation["summary"] == "Report a frontend error"
+    assert operation["parameters"][0]["name"] == "x-incident-token"
+    assert operation["parameters"][0]["in"] == "header"
+    assert operation["parameters"][0]["required"] is True
+    body_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    assert body_schema["properties"]["message"]["type"] == "string"
+    assert body_schema["properties"]["stack"]["type"] == "string"
+    assert body_schema["properties"]["url"]["type"] == "string"
+    assert body_schema["additionalProperties"] is True
+
+
 def test_frontend_error_endpoint_requires_shared_token_when_configured() -> None:
     app = FastAPI()
     transport = MemoryTransport()

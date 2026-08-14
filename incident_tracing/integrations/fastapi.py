@@ -107,11 +107,89 @@ def install_frontend_error_endpoint(
     rate_limiter: IncidentRateLimiter | None = None,
     rate_limit_window_seconds: int = 300,
     max_payload_bytes: int = 64_000,
+    include_in_schema: bool = True,
 ) -> None:
     limiter = rate_limiter or IncidentRateLimiter(window_seconds=rate_limit_window_seconds)
     router = APIRouter()
 
-    @router.post(path, include_in_schema=False)
+    @router.post(
+        path,
+        include_in_schema=include_in_schema,
+        status_code=202,
+        summary="Report a frontend error",
+        description=(
+            "Accepts a JSON frontend error report and forwards a sanitized incident "
+            "document to the configured incident transport."
+        ),
+        openapi_extra={
+            "parameters": [
+                {
+                    "name": token_header_name,
+                    "in": "header",
+                    "required": shared_token is not None,
+                    "schema": {"type": "string"},
+                    "description": "Shared frontend incident token.",
+                }
+            ],
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": True,
+                            "properties": {
+                                "message": {
+                                    "type": "string",
+                                    "description": "Frontend error message.",
+                                },
+                                "stack": {
+                                    "type": "string",
+                                    "description": "Stack trace, when available.",
+                                },
+                                "url": {
+                                    "type": "string",
+                                    "description": "Page or app URL where the error happened.",
+                                },
+                                "release": {
+                                    "type": "string",
+                                    "description": "Frontend app release or build identifier.",
+                                },
+                                "metadata": {
+                                    "type": "object",
+                                    "additionalProperties": True,
+                                    "description": "Additional client-side context.",
+                                },
+                            },
+                        },
+                        "example": {
+                            "message": "Cannot read properties of undefined",
+                            "stack": "TypeError: Cannot read properties of undefined",
+                            "url": "https://app.example.com/orders/1",
+                            "release": "2026.08.14",
+                            "metadata": {"source": "window.error"},
+                        },
+                    }
+                },
+            },
+            "responses": {
+                "202": {
+                    "description": "Incident accepted.",
+                    "content": {
+                        "application/json": {
+                            "example": {
+                                "ok": True,
+                                "request_id": "66eea2a2c3df4b1e9b7e9d8e1a4b4d5c",
+                            }
+                        }
+                    },
+                },
+                "400": {"description": "Invalid JSON payload."},
+                "413": {"description": "Payload too large."},
+                "422": {"description": "Payload must be a JSON object."},
+            },
+        },
+    )
     async def frontend_error_endpoint(request: Request) -> JSONResponse:
         if shared_token is not None and request.headers.get(token_header_name) != shared_token:
             return JSONResponse(status_code=404, content={"detail": "Not found"})

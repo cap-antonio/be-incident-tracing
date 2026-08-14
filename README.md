@@ -136,6 +136,9 @@ By default, this registers:
 POST /incident-tracing/frontend-error
 ```
 
+The endpoint is included in the host application's OpenAPI schema and Swagger UI by
+default. Pass `include_in_schema=False` if you need to hide it.
+
 If `shared_token` is set, clients must include:
 
 ```text
