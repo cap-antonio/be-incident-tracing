@@ -141,6 +141,52 @@ def test_exception_handler_does_not_override_http_exceptions() -> None:
     assert transport.calls == []
 
 
+def test_exception_handler_forwards_validation_errors_by_default() -> None:
+    app = FastAPI()
+    transport = MemoryTransport()
+    install_exception_handler(
+        app,
+        transport=transport,
+        service_name="orders-api",
+        environment="test",
+    )
+
+    @app.get("/orders/{order_id}")
+    async def get_order(order_id: int) -> None:
+        return None
+
+    response = TestClient(app, raise_server_exceptions=False).get("/orders/not-an-integer")
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "int_parsing"
+    assert len(transport.calls) == 1
+    payload = transport.calls[0]["payload"]
+    assert payload["http"]["status_code"] == 422
+    assert payload["exception"]["type"] == "RequestValidationError"
+    assert payload["exception"]["errors"][0]["type"] == "int_parsing"
+
+
+def test_exception_handler_can_exclude_validation_errors() -> None:
+    app = FastAPI()
+    transport = MemoryTransport()
+    install_exception_handler(
+        app,
+        transport=transport,
+        service_name="orders-api",
+        environment="test",
+        include_validations=False,
+    )
+
+    @app.get("/orders/{order_id}")
+    async def get_order(order_id: int) -> None:
+        return None
+
+    response = TestClient(app, raise_server_exceptions=False).get("/orders/not-an-integer")
+
+    assert response.status_code == 422
+    assert transport.calls == []
+
+
 def test_frontend_error_endpoint_returns_ok_and_sends_json_document() -> None:
     app = FastAPI()
     transport = MemoryTransport()

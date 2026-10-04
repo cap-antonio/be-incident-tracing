@@ -20,6 +20,7 @@ def build_incident_payload(
     body: Any,
     client_host: str | None,
     exc: BaseException,
+    status_code: int = 500,
     metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -31,7 +32,7 @@ def build_incident_payload(
             "method": method,
             "path": path,
             "query": sanitize(dict(query)),
-            "status_code": 500,
+            "status_code": status_code,
             "headers": sanitize(dict(headers)),
             "body": sanitize(body),
             "client_host": client_host,

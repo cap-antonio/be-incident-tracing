@@ -73,6 +73,7 @@ install_exception_handler(
     service_name="orders-api",
     environment=settings.APP_ENV,
     metadata={"region": "eu"},
+    include_validations=True,
 )
 ```
 
@@ -86,8 +87,10 @@ response:
 }
 ```
 
-FastAPI `HTTPException` responses such as `400`, `401`, `403`, and `404` continue to
-be handled normally by FastAPI.
+Request validation errors are forwarded to the incident transport by default while
+preserving FastAPI's normal `422` response. Pass `include_validations=False` to exclude
+them. Other FastAPI `HTTPException` responses such as `400`, `401`, `403`, and `404`
+continue to be handled normally by FastAPI.
 
 ## Telegram Configuration
 

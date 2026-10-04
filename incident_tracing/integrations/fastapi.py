@@ -8,6 +8,9 @@ from html import escape
 from typing import Any, Protocol
 
 from fastapi import APIRouter, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from incident_tracing.payload import (
@@ -17,6 +20,7 @@ from incident_tracing.payload import (
     build_incident_payload,
 )
 from incident_tracing.rate_limit import IncidentRateLimiter
+from incident_tracing.sanitizer import sanitize
 
 logger = logging.getLogger(__name__)
 
@@ -41,19 +45,18 @@ def install_exception_handler(
     rate_limiter: IncidentRateLimiter | None = None,
     rate_limit_window_seconds: int = 300,
     request_body_max_bytes: int = 64_000,
+    include_validations: bool = True,
 ) -> None:
     limiter = rate_limiter or IncidentRateLimiter(window_seconds=rate_limit_window_seconds)
     app.add_middleware(_BodyCaptureMiddleware)
 
-    @app.exception_handler(Exception)
-    async def incident_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-        request_id = _get_request_id(request)
-        logger.exception(
-            "Unhandled exception captured by incident tracing",
-            extra={"request_id": request_id},
-            exc_info=exc,
-        )
-
+    async def forward_incident(
+        request: Request,
+        exc: Exception,
+        *,
+        request_id: str,
+        status_code: int,
+    ) -> None:
         body = await _read_request_body(request, max_bytes=request_body_max_bytes)
         payload = build_incident_payload(
             request_id=request_id,
@@ -66,8 +69,16 @@ def install_exception_handler(
             body=body,
             client_host=request.client.host if request.client else None,
             exc=exc,
+            status_code=status_code,
             metadata=metadata,
         )
+        if isinstance(exc, RequestValidationError):
+            payload["exception"] = {
+                "type": exc.__class__.__name__,
+                "message": "Request validation failed",
+                "errors": sanitize(jsonable_encoder(exc.errors())),
+                "traceback": "",
+            }
 
         fingerprint = build_exception_fingerprint(
             method=request.method,
@@ -87,6 +98,31 @@ def install_exception_handler(
                     "Incident transport failed unexpectedly",
                     extra={"request_id": request_id},
                 )
+
+    if include_validations:
+
+        @app.exception_handler(RequestValidationError)
+        async def incident_validation_exception_handler(
+            request: Request,
+            exc: RequestValidationError,
+        ) -> JSONResponse:
+            await forward_incident(
+                request,
+                exc,
+                request_id=_get_request_id(request),
+                status_code=422,
+            )
+            return await request_validation_exception_handler(request, exc)
+
+    @app.exception_handler(Exception)
+    async def incident_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        request_id = _get_request_id(request)
+        logger.exception(
+            "Unhandled exception captured by incident tracing",
+            extra={"request_id": request_id},
+            exc_info=exc,
+        )
+        await forward_incident(request, exc, request_id=request_id, status_code=500)
 
         return JSONResponse(
             status_code=500,
