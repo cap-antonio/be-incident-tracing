@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import traceback
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -76,7 +78,25 @@ def build_exception_fingerprint(*, method: str, path: str, exc: BaseException) -
 
 
 def build_frontend_fingerprint(report: Mapping[str, Any]) -> str:
-    message = str(report.get("message", ""))
-    stack = str(report.get("stack", ""))
-    url = str(report.get("url", ""))
-    return f"frontend:{message}:{stack[:500]}:{url}"
+    metadata = report.get("metadata")
+    metadata_mapping = metadata if isinstance(metadata, Mapping) else {}
+
+    def context_value(*keys: str) -> Any:
+        for source in (report, metadata_mapping):
+            for key in keys:
+                value = source.get(key)
+                if value is not None:
+                    return value
+        return ""
+
+    components = [
+        str(report.get("message", "")),
+        str(report.get("stack", ""))[:500],
+        str(report.get("url", "")),
+        context_value("status", "status_code", "http_status"),
+        context_value("component"),
+        context_value("operation"),
+    ]
+    serialized = json.dumps(components, ensure_ascii=False, default=str, separators=(",", ":"))
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return f"frontend:{digest}"

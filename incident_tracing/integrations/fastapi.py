@@ -9,9 +9,13 @@ from typing import Any, Protocol
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from incident_tracing.payload import (
     build_exception_fingerprint,
@@ -33,6 +37,25 @@ class IncidentTransport(Protocol):
         payload: dict[str, Any],
         caption: str | None = None,
     ) -> None: ...
+
+
+def _log_delivery_result(
+    *,
+    request_id: str,
+    result: str,
+    transport: IncidentTransport,
+    error: Exception | None = None,
+) -> None:
+    extra = {
+        "request_id": request_id,
+        "result": result,
+        "transport": type(transport).__name__,
+    }
+    if error is not None:
+        extra["error_class"] = type(error).__name__
+        logger.error("Incident delivery result", extra=extra)
+        return
+    logger.info("Incident delivery result", extra=extra)
 
 
 def install_exception_handler(
@@ -79,25 +102,49 @@ def install_exception_handler(
                 "errors": sanitize(jsonable_encoder(exc.errors())),
                 "traceback": "",
             }
+        elif status_code == 422 and isinstance(exc, StarletteHTTPException):
+            payload["exception"] = {
+                "type": exc.__class__.__name__,
+                "message": "Request validation failed",
+                "errors": sanitize(jsonable_encoder(exc.detail)),
+                "traceback": "",
+            }
 
         fingerprint = build_exception_fingerprint(
             method=request.method,
             path=request.url.path,
             exc=exc,
         )
-        if limiter.should_send(fingerprint):
-            filename = f"incident-{request_id}.json"
-            try:
-                await transport.send_json_document(
-                    filename=filename,
-                    payload=payload,
-                    caption=_build_caption(payload),
-                )
-            except Exception:
-                logger.exception(
-                    "Incident transport failed unexpectedly",
-                    extra={"request_id": request_id},
-                )
+        if not limiter.should_send(fingerprint):
+            _log_delivery_result(
+                request_id=request_id,
+                result="rate_limited",
+                transport=transport,
+            )
+            return
+
+        filename = f"incident-{request_id}.json"
+        try:
+            await transport.send_json_document(
+                filename=filename,
+                payload=payload,
+                caption=_build_caption(payload),
+            )
+        except Exception as exc:
+            limiter.release(fingerprint)
+            _log_delivery_result(
+                request_id=request_id,
+                result="transport_failed",
+                transport=transport,
+                error=exc,
+            )
+            return
+
+        _log_delivery_result(
+            request_id=request_id,
+            result="delivered",
+            transport=transport,
+        )
 
     if include_validations:
 
@@ -113,6 +160,20 @@ def install_exception_handler(
                 status_code=422,
             )
             return await request_validation_exception_handler(request, exc)
+
+        @app.exception_handler(StarletteHTTPException)
+        async def incident_http_exception_handler(
+            request: Request,
+            exc: StarletteHTTPException,
+        ) -> Response:
+            if exc.status_code == 422:
+                await forward_incident(
+                    request,
+                    exc,
+                    request_id=_get_request_id(request),
+                    status_code=422,
+                )
+            return await http_exception_handler(request, exc)
 
     @app.exception_handler(Exception)
     async def incident_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -210,11 +271,37 @@ def install_frontend_error_endpoint(
             },
             "responses": {
                 "202": {
-                    "description": "Incident accepted.",
+                    "description": "Incident delivered or suppressed by rate limiting.",
+                    "content": {
+                        "application/json": {
+                            "examples": {
+                                "delivered": {
+                                    "value": {
+                                        "ok": True,
+                                        "forwarded": True,
+                                        "request_id": "66eea2a2c3df4b1e9b7e9d8e1a4b4d5c",
+                                    }
+                                },
+                                "rate_limited": {
+                                    "value": {
+                                        "ok": True,
+                                        "forwarded": False,
+                                        "reason": "rate_limited",
+                                        "request_id": "66eea2a2c3df4b1e9b7e9d8e1a4b4d5c",
+                                    }
+                                },
+                            }
+                        }
+                    },
+                },
+                "502": {
+                    "description": "The configured incident transport failed.",
                     "content": {
                         "application/json": {
                             "example": {
-                                "ok": True,
+                                "ok": False,
+                                "forwarded": False,
+                                "reason": "transport_failed",
                                 "request_id": "66eea2a2c3df4b1e9b7e9d8e1a4b4d5c",
                             }
                         }
@@ -257,21 +344,56 @@ def install_frontend_error_endpoint(
         )
 
         fingerprint = build_frontend_fingerprint(report)
-        if limiter.should_send(fingerprint):
-            filename = f"frontend-incident-{request_id}.json"
-            try:
-                await transport.send_json_document(
-                    filename=filename,
-                    payload=payload,
-                    caption=_build_frontend_caption(payload),
-                )
-            except Exception:
-                logger.exception(
-                    "Incident transport failed unexpectedly",
-                    extra={"request_id": request_id},
-                )
+        if not limiter.should_send(fingerprint):
+            _log_delivery_result(
+                request_id=request_id,
+                result="rate_limited",
+                transport=transport,
+            )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "ok": True,
+                    "forwarded": False,
+                    "reason": "rate_limited",
+                    "request_id": request_id,
+                },
+            )
 
-        return JSONResponse(status_code=202, content={"ok": True, "request_id": request_id})
+        filename = f"frontend-incident-{request_id}.json"
+        try:
+            await transport.send_json_document(
+                filename=filename,
+                payload=payload,
+                caption=_build_frontend_caption(payload),
+            )
+        except Exception as exc:
+            limiter.release(fingerprint)
+            _log_delivery_result(
+                request_id=request_id,
+                result="transport_failed",
+                transport=transport,
+                error=exc,
+            )
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "ok": False,
+                    "forwarded": False,
+                    "reason": "transport_failed",
+                    "request_id": request_id,
+                },
+            )
+
+        _log_delivery_result(
+            request_id=request_id,
+            result="delivered",
+            transport=transport,
+        )
+        return JSONResponse(
+            status_code=202,
+            content={"ok": True, "forwarded": True, "request_id": request_id},
+        )
 
     app.include_router(router)
 

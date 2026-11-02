@@ -6,7 +6,7 @@ import logging
 import httpx
 import pytest
 
-from incident_tracing.transports.telegram import TelegramTransport
+from incident_tracing.transports.telegram import TelegramTransport, TelegramTransportError
 
 
 @pytest.mark.asyncio
@@ -48,15 +48,15 @@ async def test_telegram_transport_sends_payload_as_json_document() -> None:
 
 
 @pytest.mark.asyncio
-async def test_telegram_transport_logs_and_swallows_send_errors(
+async def test_telegram_transport_raises_send_errors_without_logging_secrets(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, json={"ok": False})
+        return httpx.Response(500, json={"ok": False, "description": "secret-response"})
 
     transport = TelegramTransport(
-        bot_token="bot-token",
-        chat_id="chat-id",
+        bot_token="secret-bot-token",
+        chat_id="secret-chat-id",
         client_factory=lambda timeout: httpx.AsyncClient(
             transport=httpx.MockTransport(handler),
             timeout=timeout,
@@ -64,6 +64,13 @@ async def test_telegram_transport_logs_and_swallows_send_errors(
     )
 
     with caplog.at_level(logging.ERROR):
-        await transport.send_json_document(filename="incident.json", payload={})
+        with pytest.raises(TelegramTransportError, match="Telegram delivery failed"):
+            await transport.send_json_document(
+                filename="incident.json",
+                payload={"message": "secret-user-payload"},
+            )
 
-    assert "Failed to send incident report to Telegram" in caplog.text
+    assert "secret-bot-token" not in caplog.text
+    assert "secret-chat-id" not in caplog.text
+    assert "secret-response" not in caplog.text
+    assert "secret-user-payload" not in caplog.text

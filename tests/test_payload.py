@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from incident_tracing.payload import build_frontend_incident_payload, build_incident_payload
+import pytest
+
+from incident_tracing.payload import (
+    build_frontend_fingerprint,
+    build_frontend_incident_payload,
+    build_incident_payload,
+)
 from incident_tracing.sanitizer import MASK
 
 
@@ -85,3 +91,32 @@ def test_build_frontend_incident_payload_sanitizes_report() -> None:
     assert payload["client"]["host"] == "127.0.0.1"
     assert payload["client"]["user_agent"] == "Mozilla/5.0"
     assert payload["metadata"] == {"deployment": "blue"}
+
+
+@pytest.mark.parametrize(
+    ("field", "first", "second"),
+    [
+        ("status", 400, 422),
+        ("component", "checkout", "profile"),
+        ("operation", "create-order", "update-order"),
+    ],
+)
+def test_frontend_fingerprint_distinguishes_operational_context(
+    field: str,
+    first: object,
+    second: object,
+) -> None:
+    base_report = {
+        "message": "HTTP request failed",
+        "stack": "",
+        "url": "https://app.example.com/orders",
+    }
+
+    first_fingerprint = build_frontend_fingerprint(
+        {**base_report, "metadata": {field: first}}
+    )
+    second_fingerprint = build_frontend_fingerprint(
+        {**base_report, "metadata": {field: second}}
+    )
+
+    assert first_fingerprint != second_fingerprint

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
@@ -29,6 +31,37 @@ class MemoryTransport:
                 "caption": caption,
             }
         )
+
+
+class FailingTransport:
+    async def send_json_document(
+        self,
+        *,
+        filename: str,
+        payload: dict[str, Any],
+        caption: str | None = None,
+    ) -> None:
+        raise RuntimeError(
+            "secret-bot-token secret-chat-id secret-user-payload secret-telegram-response"
+        )
+
+
+class FailOnceTransport(MemoryTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+
+    async def send_json_document(
+        self,
+        *,
+        filename: str,
+        payload: dict[str, Any],
+        caption: str | None = None,
+    ) -> None:
+        self.attempts += 1
+        if self.attempts == 1:
+            raise RuntimeError("temporary failure")
+        await super().send_json_document(filename=filename, payload=payload, caption=caption)
 
 
 def test_exception_handler_returns_safe_response_for_unexpected_errors() -> None:
@@ -181,10 +214,70 @@ def test_exception_handler_can_exclude_validation_errors() -> None:
     async def get_order(order_id: int) -> None:
         return None
 
-    response = TestClient(app, raise_server_exceptions=False).get("/orders/not-an-integer")
+    @app.post("/orders")
+    async def create_order() -> None:
+        raise HTTPException(status_code=422, detail="Order data is inconsistent")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    validation_response = client.get("/orders/not-an-integer")
+    http_exception_response = client.post("/orders")
+
+    assert validation_response.status_code == 422
+    assert http_exception_response.status_code == 422
+    assert transport.calls == []
+
+
+def test_exception_handler_forwards_http_422_errors() -> None:
+    app = FastAPI()
+    transport = MemoryTransport()
+    install_exception_handler(
+        app,
+        transport=transport,
+        service_name="orders-api",
+        environment="test",
+    )
+
+    @app.post("/orders")
+    async def create_order() -> None:
+        raise HTTPException(status_code=422, detail="Order data is inconsistent")
+
+    response = TestClient(app, raise_server_exceptions=False).post("/orders")
 
     assert response.status_code == 422
-    assert transport.calls == []
+    assert response.json() == {"detail": "Order data is inconsistent"}
+    assert len(transport.calls) == 1
+    assert transport.calls[0]["payload"]["http"]["status_code"] == 422
+
+
+def test_exception_handler_preserves_validation_response_when_transport_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = FastAPI()
+    install_exception_handler(
+        app,
+        transport=FailingTransport(),
+        service_name="orders-api",
+        environment="test",
+    )
+
+    @app.get("/orders/{order_id}")
+    async def get_order(order_id: int) -> None:
+        return None
+
+    with caplog.at_level(logging.ERROR, logger="incident_tracing.integrations.fastapi"):
+        response = TestClient(app, raise_server_exceptions=False).get(
+            "/orders/not-an-integer",
+            headers={"x-request-id": "req-validation-failure"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "int_parsing"
+    record = next(record for record in caplog.records if record.result == "transport_failed")
+    assert record.request_id == "req-validation-failure"
+    assert record.transport == "FailingTransport"
+    assert record.error_class == "RuntimeError"
+    assert "secret-bot-token" not in caplog.text
+    assert "secret-user-payload" not in caplog.text
 
 
 def test_frontend_error_endpoint_returns_ok_and_sends_json_document() -> None:
@@ -211,6 +304,7 @@ def test_frontend_error_endpoint_returns_ok_and_sends_json_document() -> None:
     assert response.status_code == 202
     body = response.json()
     assert body["ok"] is True
+    assert body["forwarded"] is True
     assert body["request_id"]
     assert len(transport.calls) == 1
     call = transport.calls[0]
@@ -257,6 +351,7 @@ def test_frontend_error_endpoint_is_in_openapi_schema() -> None:
     assert body_schema["properties"]["stack"]["type"] == "string"
     assert body_schema["properties"]["url"]["type"] == "string"
     assert body_schema["additionalProperties"] is True
+    assert "502" in operation["responses"]
 
 
 def test_frontend_error_endpoint_requires_shared_token_when_configured() -> None:
@@ -296,14 +391,154 @@ def test_frontend_error_endpoint_rate_limits_same_error() -> None:
     )
     client = TestClient(app)
 
-    for _ in range(2):
-        response = client.post(
-            "/incident-tracing/frontend-error",
-            json={"message": "same boom", "stack": "same stack", "url": "/same"},
-        )
-        assert response.status_code == 202
+    first_response = client.post(
+        "/incident-tracing/frontend-error",
+        json={"message": "same boom", "stack": "same stack", "url": "/same"},
+    )
+    second_response = client.post(
+        "/incident-tracing/frontend-error",
+        json={"message": "same boom", "stack": "same stack", "url": "/same"},
+    )
 
+    assert first_response.status_code == 202
+    assert first_response.json()["forwarded"] is True
+    assert second_response.status_code == 202
+    assert second_response.json()["ok"] is True
+    assert second_response.json()["forwarded"] is False
+    assert second_response.json()["reason"] == "rate_limited"
     assert len(transport.calls) == 1
+
+
+def test_frontend_error_endpoint_returns_safe_failure_when_transport_raises(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = FastAPI()
+    install_frontend_error_endpoint(
+        app,
+        transport=FailingTransport(),
+        service_name="orders-web",
+        environment="test",
+    )
+
+    with caplog.at_level(logging.INFO, logger="incident_tracing.integrations.fastapi"):
+        response = TestClient(app).post(
+            "/incident-tracing/frontend-error",
+            json={
+                "message": "secret-user-payload",
+                "metadata": {"token": "secret-bot-token"},
+            },
+            headers={"x-request-id": "req-transport-failure"},
+        )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "ok": False,
+        "forwarded": False,
+        "reason": "transport_failed",
+        "request_id": "req-transport-failure",
+    }
+    assert "secret-bot-token" not in response.text
+    assert "secret-chat-id" not in response.text
+    assert "secret-user-payload" not in response.text
+    assert "secret-telegram-response" not in response.text
+    assert "secret-bot-token" not in caplog.text
+    assert "secret-chat-id" not in caplog.text
+    assert "secret-user-payload" not in caplog.text
+    assert "secret-telegram-response" not in caplog.text
+
+    record = next(record for record in caplog.records if record.result == "transport_failed")
+    assert record.request_id == "req-transport-failure"
+    assert record.transport == "FailingTransport"
+    assert record.error_class == "RuntimeError"
+
+
+def test_frontend_error_endpoint_retries_after_transport_failure() -> None:
+    app = FastAPI()
+    transport = FailOnceTransport()
+    install_frontend_error_endpoint(
+        app,
+        transport=transport,
+        service_name="orders-web",
+        environment="test",
+    )
+    client = TestClient(app)
+    report = {"message": "same", "url": "/orders"}
+
+    failed_response = client.post("/incident-tracing/frontend-error", json=report)
+    retry_response = client.post("/incident-tracing/frontend-error", json=report)
+
+    assert failed_response.status_code == 502
+    assert retry_response.status_code == 202
+    assert retry_response.json()["forwarded"] is True
+    assert transport.attempts == 2
+    assert len(transport.calls) == 1
+
+
+def test_frontend_error_endpoint_logs_delivered_and_rate_limited_results(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = FastAPI()
+    install_frontend_error_endpoint(
+        app,
+        transport=MemoryTransport(),
+        service_name="orders-web",
+        environment="test",
+    )
+    client = TestClient(app)
+
+    with caplog.at_level(logging.INFO, logger="incident_tracing.integrations.fastapi"):
+        client.post(
+            "/incident-tracing/frontend-error",
+            json={"message": "same", "url": "/orders"},
+            headers={"x-request-id": "req-delivered"},
+        )
+        client.post(
+            "/incident-tracing/frontend-error",
+            json={"message": "same", "url": "/orders"},
+            headers={"x-request-id": "req-limited"},
+        )
+
+    records = {
+        record.result: record
+        for record in caplog.records
+        if hasattr(record, "result")
+    }
+    assert records["delivered"].request_id == "req-delivered"
+    assert records["delivered"].transport == "MemoryTransport"
+    assert records["rate_limited"].request_id == "req-limited"
+    assert records["rate_limited"].transport == "MemoryTransport"
+
+
+def test_frontend_error_endpoint_keeps_400_and_422_reports_distinct() -> None:
+    app = FastAPI()
+    transport = MemoryTransport()
+    install_frontend_error_endpoint(
+        app,
+        transport=transport,
+        service_name="orders-web",
+        environment="test",
+    )
+    client = TestClient(app)
+    base_report = {
+        "message": "HTTP request failed",
+        "url": "/orders",
+        "metadata": {"component": "orders", "operation": "load"},
+    }
+
+    response_400 = client.post(
+        "/incident-tracing/frontend-error",
+        json={**base_report, "metadata": {**base_report["metadata"], "status": 400}},
+    )
+    response_422 = client.post(
+        "/incident-tracing/frontend-error",
+        json={**base_report, "metadata": {**base_report["metadata"], "status": 422}},
+    )
+
+    assert response_400.status_code == 202
+    assert response_400.json()["forwarded"] is True
+    assert response_422.status_code == 202
+    assert response_422.json()["forwarded"] is True
+    assert len(transport.calls) == 2
 
 
 def test_frontend_error_endpoint_rejects_too_large_payload() -> None:
@@ -323,4 +558,34 @@ def test_frontend_error_endpoint_rejects_too_large_payload() -> None:
     )
 
     assert response.status_code == 413
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_status"),
+    [
+        (b"{not-json", 400),
+        (b"[]", 422),
+    ],
+)
+def test_frontend_error_endpoint_preserves_payload_validation_responses(
+    content: bytes,
+    expected_status: int,
+) -> None:
+    app = FastAPI()
+    transport = MemoryTransport()
+    install_frontend_error_endpoint(
+        app,
+        transport=transport,
+        service_name="orders-web",
+        environment="test",
+    )
+
+    response = TestClient(app).post(
+        "/incident-tracing/frontend-error",
+        content=content,
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == expected_status
     assert transport.calls == []

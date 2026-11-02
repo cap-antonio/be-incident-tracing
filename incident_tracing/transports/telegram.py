@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Callable
 from typing import Any
 
 import httpx
 
-logger = logging.getLogger(__name__)
-
 ClientFactory = Callable[[httpx.Timeout], httpx.AsyncClient]
+
+
+class TelegramTransportError(RuntimeError):
+    """Safe public error raised when Telegram delivery fails."""
 
 
 class TelegramTransport:
@@ -50,4 +51,4 @@ class TelegramTransport:
                 response = await client.post(url, data=data, files=files)
                 response.raise_for_status()
         except Exception:
-            logger.exception("Failed to send incident report to Telegram")
+            raise TelegramTransportError("Telegram delivery failed") from None

@@ -87,10 +87,11 @@ response:
 }
 ```
 
-Request validation errors are forwarded to the incident transport by default while
-preserving FastAPI's normal `422` response. Pass `include_validations=False` to exclude
-them. Other FastAPI `HTTPException` responses such as `400`, `401`, `403`, and `404`
-continue to be handled normally by FastAPI.
+FastAPI request validation errors and explicit `HTTPException(status_code=422)` errors
+are forwarded to the incident transport by default while preserving the original `422`
+response. Pass `include_validations=False` to exclude them. Other FastAPI
+`HTTPException` responses such as `400`, `401`, `403`, and `404` continue to be handled
+normally by FastAPI.
 
 ## Telegram Configuration
 
@@ -104,8 +105,10 @@ TELEGRAM_ERRORS_CHAT_ID=-1001234567890
 See `.env.example` for the environment variables used in the examples.
 
 The transport uses Telegram Bot API `sendDocument`, so incidents arrive as JSON files
-instead of long chat messages. Telegram delivery failures are logged and swallowed so
-they do not change your API response.
+instead of long chat messages. Telegram delivery failures are raised to the integration
+layer as a safe `TelegramTransportError` without the bot URL, token, chat ID, response
+body, or incident payload. The backend exception handlers keep the application's original
+error response, while the frontend incident endpoint reports the failure explicitly.
 
 ## Connecting A Frontend
 
@@ -217,11 +220,37 @@ window.addEventListener("unhandledrejection", (event) => {
 }
 ```
 
-Successful frontend reports return:
+Delivered frontend reports return:
 
 ```json
 {
   "ok": true,
+  "forwarded": true,
+  "request_id": "8aa7f4e5-2d6c-47b8-a5f5-dcb44e76de85"
+}
+```
+
+Reports suppressed by the in-memory rate limiter still return HTTP `202`, but are
+distinguishable from delivered reports:
+
+```json
+{
+  "ok": true,
+  "forwarded": false,
+  "reason": "rate_limited",
+  "request_id": "8aa7f4e5-2d6c-47b8-a5f5-dcb44e76de85"
+}
+```
+
+If the configured transport or Telegram fails, the endpoint returns HTTP `502 Bad
+Gateway`. The response is intentionally generic and never contains the transport error,
+Telegram response body, credentials, or frontend report:
+
+```json
+{
+  "ok": false,
+  "forwarded": false,
+  "reason": "transport_failed",
   "request_id": "8aa7f4e5-2d6c-47b8-a5f5-dcb44e76de85"
 }
 ```
@@ -273,6 +302,13 @@ also masked.
 The FastAPI integrations include simple in-memory debounce by incident fingerprint.
 By default, the same backend exception or frontend report is sent at most once every
 300 seconds.
+
+Frontend fingerprints include the report's message, first 500 stack characters, URL,
+HTTP status, component, and operation. The last three values may be top-level fields or
+members of `metadata`; this prevents otherwise identical HTTP `400` and `422` reports
+from suppressing one another. Fingerprints are stored as SHA-256 digests rather than
+raw report content. A failed delivery releases its limiter reservation so a later report
+can retry normally.
 
 ```python
 install_exception_handler(

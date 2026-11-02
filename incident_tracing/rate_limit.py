@@ -17,3 +17,7 @@ class IncidentRateLimiter:
 
         self._last_sent_at[fingerprint] = current_time
         return True
+
+    def release(self, fingerprint: str) -> None:
+        """Release a reserved fingerprint after delivery fails."""
+        self._last_sent_at.pop(fingerprint, None)
